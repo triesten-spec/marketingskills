@@ -144,9 +144,10 @@ Add these blocks to the **existing** policy file. Do not replace the file. Use t
 
   "groups": {
     "group:srs-agents": [
-      "paraanjoy1991@gmail.com",   // Joy
-      "rymajhoy77@gmail.com",      // Mary
-      "coliflores00@gmail.com"     // Lucas
+      "louis.solutionsrus@gmail.com", // Louis — pilot lead
+      "paraanjoy1991@gmail.com",      // Joy
+      "rymajhoy77@gmail.com",         // Mary
+      "coliflores00@gmail.com"        // Lucas
     ]
   },
 
