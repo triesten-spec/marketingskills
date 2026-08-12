@@ -30,7 +30,19 @@ Seven items need adjusting. They are folded into the phases below, but call them
 2. **Use grants with `via`, not a broad `autogroup:internet` accept.** A plain internet grant lets agents use *any* exit node they can see. The `via` field pins them to the approved node. See Phase 3.
 3. **Windows has no per-app split tunneling.** Once an agent selects the exit node, *all* traffic goes through it, including MicroSIP/D1AL SIP and RTP. This is the crux of the Phase 6 voice risk — there is no setting that routes only the browser.
 4. **The tailnet was running the stock allow-all policy, with the four agents already active on it.** Verified 2026-08-12: the live policy still contained the default `{"src": ["*"], "dst": ["*"], "ip": ["*"]}`, and Louis, Joy, Mary and Lucas were all `status=active` members under it. Inviting a user to a tailnet grants access the moment they sign in — the policy file is the only gate, and it was open. Nothing had happened only because none of them had installed Tailscale yet. **Phase 3 is not a hardening step to do before rollout; it is the control that was missing.** Fixed — see Phase 3.
-5. **mei has no out-of-band SSH, and that is an unresolved defect, not merely a constraint.** Public `104.156.244.86:22` is filtered; the only admin path is Tailscale `100.66.204.9`, which is also the path the openclaw tunnel uses. Any change that can drop mei's `tailscaled` or alter its ACL identity risks losing the box. Prove access survives *before* making such a change, never after — this is why Phase 3 tags via the API rather than on the host. **But the policy grant only guarantees the policy layer.** `tailscaled` crashing, a failed upgrade, key expiry, or a host firewall change all still cost you the machine, and no ACL test detects any of them. **Confirm the hosting provider's web console works — before you need it.** Until that is verified, mei is a single point of administrative failure carrying production services.
+5. **mei's out-of-band SSH is allowlisted to a single rotating residential IP — treat recovery as unproven.** An earlier revision of this document claimed mei had *no* out-of-band SSH. That was wrong, and the error is worth recording: it came from running `nc` against `104.156.244.86:22` from one machine, getting a timeout, and generalising "filtered for me" into "filtered for everyone." A bounded test proves the test, not the absence. mei's UFW rules are:
+
+   ```
+   -A ufw-user-input -s <allowlisted-ip>/32 -p tcp --dport 22 -j ACCEPT
+   -A ufw-user-input -p tcp --dport 22 -j DROP
+   -A ufw-user-input -i tailscale0 -p tcp --dport 22 -j ACCEPT
+   ```
+
+   So a public SSH path exists, restricted to specific source addresses. The catch: those are **residential IPs that rotate** — the original entry pointed at an address the operator no longer held, making the recovery path stale without anyone noticing. (The admin's own IP was observed changing twice in one afternoon, which is the same problem this project exists to solve.) A second, current address was added on 2026-08-12; it will go stale the same way.
+
+   **Order matters when adding one.** UFW appends by default, which places the new rule *after* the catch-all DROP where it can never match. Use `ufw insert <n>` to place it above the DROP, then verify with `iptables -S ufw-user-input`.
+
+   Beyond SSH: the ACL grant only guarantees the policy layer. `tailscaled` crashing, a failed automatic upgrade, key expiry, or a firewall change all still cost you the machine, and no ACL test detects any of them. **Confirm the hosting provider's web console works — before you need it.** Until that is verified, mei remains a single point of administrative failure carrying production services.
 6. **The policy permits egress via the exit node; it cannot compel it.** A grant authorises the routing relationship. It does not force a Windows client to select the exit node, or to stay on it — an agent can deselect it or quit Tailscale and immediately browse from their home IP. There is no per-app or always-on enforcement on Windows without MDM. In practice this is partly self-policing, because D1al's allowlist contains only 104.156.244.86, so an agent who drops the exit node loses D1al access and notices. Do not describe this design as *enforced* static-IP egress; it is *available* static-IP egress with a visible failure mode.
 7. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
 
@@ -319,9 +331,17 @@ Add the agent's account to `group:srs-agents` in the policy file before they con
 
 ## Phase 5 — Required testing
 
-> **Outstanding — this is the gate.** Nothing rolls out past Louis until it passes.
+> **Status 2026-08-12:** three of four agents are onboarded and routing through mei
+> with direct (non-DERP) connections — Joy, Mary and Lucas. Louis is **not** using
+> the exit node: he has his own dedicated IP, so he is out of scope for this
+> rollout. The pilot therefore runs with the onboarded agents, not with Louis.
+>
+> Consider removing Louis from `group:srs-agents` on least-privilege grounds if he
+> will never use the exit node — the grant is harmless but unused.
 
-Pilot with **Louis and one agent** before deploying to everyone.
+Pilot with **two of the onboarded agents** before relying on it for the whole team.
+(The original plan named Louis as pilot lead; that is superseded — see the status
+note above.)
 
 Confirm:
 
