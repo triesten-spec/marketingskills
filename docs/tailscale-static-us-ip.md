@@ -24,14 +24,15 @@ The VPS becomes the agency's internet gateway. Agents must use individual Tailsc
 
 ## Read this before you start
 
-Six items need adjusting. They are folded into the phases below, but call them out here so they are not missed. Items 4 and 5 were discovered on 2026-08-12 while executing Phases 2–3 against the live tailnet.
+Seven items need adjusting. They are folded into the phases below, but call them out here so they are not missed. Items 4 and 5 were discovered on 2026-08-12 while executing Phases 2–3 against the live tailnet.
 
 1. **Do not run a bare `sudo tailscale up` on the VPS.** `tailscale up` resets every unspecified flag to its default, which will silently undo existing configuration on a node that is already connected. `tailscale set` changes only the flag you pass. Use `set` — see Phase 2. ([tailscale set](https://linuxcommandlibrary.com/man/tailscale-set), [tailscale up](https://tailscale.com/docs/reference/tailscale-cli/up))
 2. **Use grants with `via`, not a broad `autogroup:internet` accept.** A plain internet grant lets agents use *any* exit node they can see. The `via` field pins them to the approved node. See Phase 3.
 3. **Windows has no per-app split tunneling.** Once an agent selects the exit node, *all* traffic goes through it, including MicroSIP/D1AL SIP and RTP. This is the crux of the Phase 6 voice risk — there is no setting that routes only the browser.
 4. **The tailnet was running the stock allow-all policy, with the four agents already active on it.** Verified 2026-08-12: the live policy still contained the default `{"src": ["*"], "dst": ["*"], "ip": ["*"]}`, and Louis, Joy, Mary and Lucas were all `status=active` members under it. Inviting a user to a tailnet grants access the moment they sign in — the policy file is the only gate, and it was open. Nothing had happened only because none of them had installed Tailscale yet. **Phase 3 is not a hardening step to do before rollout; it is the control that was missing.** Fixed — see Phase 3.
-5. **mei has no out-of-band SSH.** Public `104.156.244.86:22` is filtered; the only admin path is Tailscale `100.66.204.9`, which is also the path the openclaw tunnel uses. Any change that can drop mei's `tailscaled` or alter its ACL identity risks losing the box to the hosting provider's web console. Prove access survives *before* making such a change, never after. This is why Phase 3 tags via the API rather than on the host.
-6. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
+5. **mei has no out-of-band SSH, and that is an unresolved defect, not merely a constraint.** Public `104.156.244.86:22` is filtered; the only admin path is Tailscale `100.66.204.9`, which is also the path the openclaw tunnel uses. Any change that can drop mei's `tailscaled` or alter its ACL identity risks losing the box. Prove access survives *before* making such a change, never after — this is why Phase 3 tags via the API rather than on the host. **But the policy grant only guarantees the policy layer.** `tailscaled` crashing, a failed upgrade, key expiry, or a host firewall change all still cost you the machine, and no ACL test detects any of them. **Confirm the hosting provider's web console works — before you need it.** Until that is verified, mei is a single point of administrative failure carrying production services.
+6. **The policy permits egress via the exit node; it cannot compel it.** A grant authorises the routing relationship. It does not force a Windows client to select the exit node, or to stay on it — an agent can deselect it or quit Tailscale and immediately browse from their home IP. There is no per-app or always-on enforcement on Windows without MDM. In practice this is partly self-policing, because D1al's allowlist contains only 104.156.244.86, so an agent who drops the exit node loses D1al access and notices. Do not describe this design as *enforced* static-IP egress; it is *available* static-IP egress with a visible failure mode.
+7. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
 
 ---
 
@@ -213,7 +214,11 @@ Add these blocks to the **existing** policy file. Do not replace the file. Use t
   ],
 
   // Machine-checked on every save. Keep these — they are the regression test
-  // for the lockdown.
+  // for the lockdown. Assert EVERY member of group:srs-agents, not a sample:
+  // an untested agent is a contractor whose access nobody has reviewed.
+  // Note these prove policy-layer reachability only. They do not prove sshd is
+  // running, that authentication works, or that tailscaled is healthy — and
+  // ordinary `tests` do not evaluate the `ssh` block at all (that needs `sshTests`).
   "tests": [
     {
       "src": "triesten@balancedpro.com",
@@ -225,13 +230,16 @@ Add these blocks to the **existing** policy file. Do not replace the file. Use t
         "tag:srs-exit-node:22"  // post-tagging identity
       ]
     },
+    // Repeat this block for EVERY agent: louis, paraanjoy1991,
+    // rymajhoy77 and coliflores00. All four are asserted in the live policy.
     {
       "src": "louis.solutionsrus@gmail.com",
       "deny": [
         "100.66.204.9:22", "100.92.45.22:22", "100.96.27.24:22",
         "100.64.113.42:22", "100.93.122.49:22",
-        "100.94.97.37:3389",  // Destro (Windows RDP)
-        "100.66.204.9:5432"   // mei — database port
+        "100.94.97.37:3389",   // Destro (Windows RDP)
+        "100.66.204.9:5432",   // mei — database port
+        "tag:srs-exit-node:22" // mei by tag identity, not just by IP
       ]
     }
   ]
@@ -289,8 +297,9 @@ ground interactively.
 ## Phase 4 — Agent onboarding
 
 > **Outstanding.** Requires a human on each Windows machine. Phases 1–3 are done, so
-> the exit node is live and the lockdown is in force — an agent signing in now gets
-> internet egress via Miami and nothing else on the tailnet.
+> the exit node is live and the lockdown is in force — an agent signing in now *can
+> select* Miami for egress, and can reach nothing else on the tailnet. Selecting it
+> remains the agent's action; see pre-flight item 6.
 
 For every agent:
 
@@ -389,13 +398,19 @@ tailscale set --exit-node=
 # On the VPS — stop advertising
 sudo tailscale set --advertise-exit-node=false
 
-# Remove the tag (returns mei's ownership to the authenticating user).
-# Do this from the API or console, not the host — see Phase 3.
-curl -u "$TS_API_TOKEN:" -X POST -H "Content-Type: application/json" \
-  -d '{"tags":[]}' "https://api.tailscale.com/api/v2/device/<DEVICE_ID>/tags"
-
 # Revert the policy file via the admin console's version history
 ```
+
+**Removing the tag is not a clean rollback step — plan around it.** Posting
+`{"tags":[]}` does not hand mei back to the user who originally authenticated it: a
+tagged device stripped of every tag has no identity, and Tailscale requires the device
+to be re-authenticated (or given another tag) to restore user ownership. Re-auth on mei
+is exactly the operation pre-flight item 5 says to avoid. So:
+
+- To stop agents using mei as an exit node, **leave the tag in place** and remove the
+  `group:srs-agents` grant, or set `--advertise-exit-node=false` on the host. Both are
+  reversible and neither touches mei's identity.
+- Only untag mei if you have confirmed working out-of-band console access first.
 
 **Do not roll back the policy to the previous revision without reading it first.** The
 revision immediately prior to 2026-08-12 is the stock allow-all, which grants the four
