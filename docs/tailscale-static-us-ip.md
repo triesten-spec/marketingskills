@@ -40,7 +40,7 @@ Three items in the original plan need adjusting. They are folded into the phases
 3. Obtain a reserved/static IP from the hosting provider if the VPS could be rebuilt or reassigned. On most providers the primary IP survives reboots and stops but is **released on destroy/rebuild** — a reserved IP product must be explicitly attached to survive that.
 4. Confirm adequate bandwidth and monitor CPU, memory, packet loss, latency, and monthly transfer limits. Every agent's full browsing volume now lands on this VPS's transfer allowance.
 5. Preserve existing firewall and Tailscale settings before making changes.
-6. **Request D1al add 104.156.244.86 to their firewall allowlist.** Confirmed with D1al's dev team: they allow only specified IPs onto their iptables allowlist (no IP scoring), and once an IP is added, all traffic from it is granted access immediately. Send them the IP and get written confirmation it's live before Phase 5 testing — this is a hard dependency for the pilot, not something to discover mid-test-call. See the access-control note below.
+6. ✅ **D1al has added 104.156.244.86 to their firewall allowlist** (confirmed by D1al). This dependency is clear — proceed to Phase 5 testing once Phases 2–4 are done. See the access-control note below.
 
 Capture the current state so you can roll back:
 
