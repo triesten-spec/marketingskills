@@ -29,6 +29,7 @@ Three items in the original plan need adjusting. They are folded into the phases
 1. **Do not run a bare `sudo tailscale up` on the VPS.** `tailscale up` resets every unspecified flag to its default, which will silently undo existing configuration on a node that is already connected. `tailscale set` changes only the flag you pass. Use `set` — see Phase 2. ([tailscale set](https://linuxcommandlibrary.com/man/tailscale-set), [tailscale up](https://tailscale.com/docs/reference/tailscale-cli/up))
 2. **Use grants with `via`, not a broad `autogroup:internet` accept.** A plain internet grant lets agents use *any* exit node they can see. The `via` field pins them to the approved node. See Phase 3.
 3. **Windows has no per-app split tunneling.** Once an agent selects the exit node, *all* traffic goes through it, including MicroSIP/D1AL SIP and RTP. This is the crux of the Phase 6 voice risk — there is no setting that routes only the browser.
+4. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
 
 ---
 
@@ -39,6 +40,7 @@ Three items in the original plan need adjusting. They are folded into the phases
 3. Obtain a reserved/static IP from the hosting provider if the VPS could be rebuilt or reassigned. On most providers the primary IP survives reboots and stops but is **released on destroy/rebuild** — a reserved IP product must be explicitly attached to survive that.
 4. Confirm adequate bandwidth and monitor CPU, memory, packet loss, latency, and monthly transfer limits. Every agent's full browsing volume now lands on this VPS's transfer allowance.
 5. Preserve existing firewall and Tailscale settings before making changes.
+6. **Request D1al add 104.156.244.86 to their firewall allowlist.** Confirmed with D1al's dev team: they allow only specified IPs onto their iptables allowlist (no IP scoring), and once an IP is added, all traffic from it is granted access immediately. Send them the IP and get written confirmation it's live before Phase 5 testing — this is a hard dependency for the pilot, not something to discover mid-test-call. See the access-control note below.
 
 Capture the current state so you can roll back:
 
@@ -216,16 +218,19 @@ Confirm:
 
 **Run at least 10 test calls before approval.**
 
-Two failure modes to watch for specifically:
+One failure mode to watch for specifically:
 
-- **Datacenter IP reputation.** Fraud and bot detection on payment and client portals scores datacenter IP ranges more harshly than residential ones. A block here is a property of the IP, not a misconfiguration, and may need to be resolved with the portal vendor via allowlisting.
-- **SIP source IP.** If the voice provider IP-restricts or geo-pins registrations, changing the source IP to the VPS can break SIP registration outright. Verify with the provider before the pilot rather than debugging it during test calls.
+- **Datacenter IP reputation on other portals.** Fraud and bot detection on payment and client-facing portals (other than D1al) can score datacenter IP ranges more harshly than residential ones. A block here is a property of the IP, not a misconfiguration, and may need to be resolved with the relevant vendor via allowlisting, same as was done with D1al.
+
+D1al's SIP/login IP restriction is a known quantity, not a risk to test for: D1al confirmed they gate access via a manual firewall allowlist with no IP scoring, so once 104.156.244.86 is added (Phase 1, item 6) and confirmed live, D1al access will work. If it doesn't, the allowlist entry is the first thing to check, not the SIP client config.
 
 ---
 
 ## Phase 6 — Voice-risk decision
 
 The exit node routes nearly all Windows internet traffic, including MicroSIP/D1AL. This may increase VoIP latency. Windows offers no per-application split tunneling, so this is all-or-nothing per agent.
+
+This phase is about **latency, jitter, and call quality** now that D1al's access-control risk is resolved (Phase 1, item 6) — not about whether D1al will accept the connection at all.
 
 ### Acceptance targets
 
