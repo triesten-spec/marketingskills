@@ -1,7 +1,7 @@
 # Solutions R Us — Tailscale Static U.S. IP Implementation Plan
 
 **Audience:** implementing developer
-**Status:** ready to execute
+**Status:** Phases 1–3 complete and verified (2026-08-12). Phases 4–6 outstanding — they need a human on a Windows machine.
 **Owner:** Triesten (tailnet admin) — pilot with Louis + one agent before general rollout
 
 ---
@@ -24,12 +24,14 @@ The VPS becomes the agency's internet gateway. Agents must use individual Tailsc
 
 ## Read this before you start
 
-Three items in the original plan need adjusting. They are folded into the phases below, but call them out here so they are not missed:
+Six items need adjusting. They are folded into the phases below, but call them out here so they are not missed. Items 4 and 5 were discovered on 2026-08-12 while executing Phases 2–3 against the live tailnet.
 
 1. **Do not run a bare `sudo tailscale up` on the VPS.** `tailscale up` resets every unspecified flag to its default, which will silently undo existing configuration on a node that is already connected. `tailscale set` changes only the flag you pass. Use `set` — see Phase 2. ([tailscale set](https://linuxcommandlibrary.com/man/tailscale-set), [tailscale up](https://tailscale.com/docs/reference/tailscale-cli/up))
 2. **Use grants with `via`, not a broad `autogroup:internet` accept.** A plain internet grant lets agents use *any* exit node they can see. The `via` field pins them to the approved node. See Phase 3.
 3. **Windows has no per-app split tunneling.** Once an agent selects the exit node, *all* traffic goes through it, including MicroSIP/D1AL SIP and RTP. This is the crux of the Phase 6 voice risk — there is no setting that routes only the browser.
-4. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
+4. **The tailnet was running the stock allow-all policy, with the four agents already active on it.** Verified 2026-08-12: the live policy still contained the default `{"src": ["*"], "dst": ["*"], "ip": ["*"]}`, and Louis, Joy, Mary and Lucas were all `status=active` members under it. Inviting a user to a tailnet grants access the moment they sign in — the policy file is the only gate, and it was open. Nothing had happened only because none of them had installed Tailscale yet. **Phase 3 is not a hardening step to do before rollout; it is the control that was missing.** Fixed — see Phase 3.
+5. **mei has no out-of-band SSH.** Public `104.156.244.86:22` is filtered; the only admin path is Tailscale `100.66.204.9`, which is also the path the openclaw tunnel uses. Any change that can drop mei's `tailscaled` or alter its ACL identity risks losing the box to the hosting provider's web console. Prove access survives *before* making such a change, never after. This is why Phase 3 tags via the API rather than on the host.
+6. **D1al confirmed the SIP/login risk is resolved, but shifts responsibility onto the Tailscale ACL.** D1al gates access with a manually-managed firewall IP allowlist (no fraud/IP scoring) — once 104.156.244.86 is added, *any* traffic arriving from that IP is granted access immediately. That means D1al is no longer the control that decides which agents can reach it; the Phase 3 policy grant is. Test that grant thoroughly before the IP goes on D1al's allowlist.
 
 ---
 
@@ -55,6 +57,23 @@ curl -4 -s https://ifconfig.me    # expect 104.156.244.86
 ---
 
 ## Phase 2 — Configure the exit node
+
+> **✅ Complete — verified 2026-08-12.**
+> | Item | Verified state |
+> |---|---|
+> | Public IP | `104.156.244.86` (Miami FL, The Constant Company) |
+> | `net.ipv4.ip_forward` / `net.ipv6.conf.all.forwarding` | `1` / `1` |
+> | `AdvertiseRoutes` | `['0.0.0.0/0', '::/0']` |
+> | Exit node approved in console | yes — `ExitNodeOption = True`, mei appears in `tailscale exit-node list` |
+> | `rx-udp-gro-forwarding` | `on`, persisted via `tailscale-gro-tuning.service` (enabled, active, ordered `Before=tailscaled.service`) |
+> | Key expiry on mei | already disabled (`keyExpiryDisabled: true`) |
+>
+> Backups taken on the host first: `/root/tailscale-prefs-backup-20260812.json`,
+> `/root/iptables-backup-20260812.rules`.
+>
+> End-to-end proof: with the exit node selected on an admin machine, egress moved
+> `74.115.34.57` → `104.156.244.86` and returned cleanly on release.
+> mei is Ubuntu 24.04 / kernel 6.8, so the GRO tuning is genuinely supported, not merely accepted.
 
 On the "mei" Linux VPS:
 
@@ -120,6 +139,21 @@ While you are there, disable key expiry on **mei**. If its key expires the exit 
 
 ## Phase 3 — Lock down access
 
+> **✅ Complete — applied and verified 2026-08-12.** This phase was not a precaution.
+> The live policy was still the stock allow-all with all four agents active on it
+> (see "Read this before you start", item 4).
+>
+> Verified after applying:
+> - Catch-all `{"src":["*"],"dst":["*"],"ip":["*"]}` removed; live policy semantically
+>   identical to the validated file.
+> - Policy `tests` pass: Louis and Lucas are `Drop` on mei, eva, lestat, lindsay,
+>   MacBook Pro, Destro:3389 and mei:5432.
+> - Admin access intact: SSH to mei and lestat OK, all three openclaw tunnel ports
+>   still listening.
+> - mei tagged `tag:srs-exit-node`; ownership moved off `triesten@`; still offers the
+>   exit node; tests re-run **after** tagging still pass — so the denials hold against
+>   a genuinely tagged node, not by accident of prior ownership.
+
 Before onboarding agents:
 
 1. Review the existing Tailscale access policy — **do not overwrite it blindly**.
@@ -153,35 +187,110 @@ Add these blocks to the **existing** policy file. Do not replace the file. Use t
 
   "grants": [
     {
+      // Admin retains full access to the whole tailnet, INCLUDING tagged
+      // devices. This is what preserves SSH to mei after tagging moves its
+      // ownership to the tag. Written as both the autogroup and the literal
+      // email so access cannot hinge on how the Owner role maps into
+      // autogroup:admin. mei has no out-of-band SSH — do not bet on it.
+      "src": ["autogroup:admin", "triesten@balancedpro.com"],
+      "dst": ["*"],
+      "ip":  ["*"]
+    },
+    {
       // Agents may reach the internet, but ONLY via the tagged Miami node.
       "src": ["group:srs-agents"],
       "dst": ["autogroup:internet"],
       "via": ["tag:srs-exit-node"],
       "ip":  ["*"]
     }
+  ],
+
+  // Narrowed from the default "autogroup:member". Under the default the SRS
+  // agents could enable Funnel and expose a service on their own machine to
+  // the public internet.
+  "nodeAttrs": [
+    { "target": ["autogroup:admin", "triesten@balancedpro.com"], "attr": ["funnel"] }
+  ],
+
+  // Machine-checked on every save. Keep these — they are the regression test
+  // for the lockdown.
+  "tests": [
+    {
+      "src": "triesten@balancedpro.com",
+      "accept": [
+        "100.66.204.9:22",      // mei — no out-of-band SSH, must not break
+        "100.96.27.24:22",      // lestat
+        "100.64.113.42:22",     // lindsay
+        "100.92.45.22:22",      // eva
+        "tag:srs-exit-node:22"  // post-tagging identity
+      ]
+    },
+    {
+      "src": "louis.solutionsrus@gmail.com",
+      "deny": [
+        "100.66.204.9:22", "100.92.45.22:22", "100.96.27.24:22",
+        "100.64.113.42:22", "100.93.122.49:22",
+        "100.94.97.37:3389",  // Destro (Windows RDP)
+        "100.66.204.9:5432"   // mei — database port
+      ]
+    }
   ]
 }
 ```
+
+The `triesten@balancedpro.com → tag:srs-exit-node:22` assertion is the important one.
+It proves admin SSH survives the ownership transfer *before* the tag is applied, which
+is the difference between a tested change and a hopeful one.
 
 The `via` field is what confines agents to the approved exit node — without it, an internet grant lets them route through any exit node in the tailnet. ([Grant examples](https://tailscale.com/docs/reference/examples/grants), [Policy file syntax](https://tailscale.com/docs/reference/syntax/policy-file))
 
 Note that `group:srs-agents` gets **no** rule granting access to any tailnet device. That absence is the point — it satisfies requirement 5. Confirm no pre-existing broad rule (for example a catch-all `"src": ["autogroup:member"], "dst": ["*:*"]`) already grants them more than intended; if one exists, it must be narrowed or the agents excluded from it.
 
-Apply the tag to the VPS from the admin console (Machines → mei → Edit machine settings), or on the host:
+Apply the tag **via the API**, not on the host:
 
 ```bash
-sudo tailscale set --advertise-tags=tag:srs-exit-node
+# mei's numeric device id comes from GET /api/v2/tailnet/-/devices
+curl -u "$TS_API_TOKEN:" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"tags":["tag:srs-exit-node"]}' \
+  "https://api.tailscale.com/api/v2/device/<DEVICE_ID>/tags"
 ```
 
-Tagging a device transfers ownership from the user who authenticated it to the tag. Re-authentication may be required, and the device's ACL identity changes — this is why the policy must be tested before it is relied on. ([Tags](https://tailscale.com/docs/features/tags))
+**Do not use `sudo tailscale set --advertise-tags=tag:srs-exit-node` on mei.** The host
+command typically forces the node to re-authenticate. mei's only admin path is the
+Tailscale tunnel itself (see pre-flight item 5), so re-auth there risks losing the box
+to the hosting provider's web console. The API applies the tag server-side with no
+re-auth. The admin console (Machines → mei → Edit machine settings) is equally safe.
+
+Tagging transfers ownership from the user who authenticated the device to the tag, which
+changes the device's ACL identity — **this is why the admin grant above must be in place
+before the tag is applied, not after.** Order: apply policy → tag → verify SSH.
+([Tags](https://tailscale.com/docs/features/tags))
 
 The developer must test the final access policy before deployment, because replacing the existing policy incorrectly could disrupt current Tailscale access.
 
-**Verification:** use the admin console's access-rule tester to confirm, for a test agent account, that internet access via `tag:srs-exit-node` is permitted and that Mei, Eva, and any SSH/database host are denied.
+**Verification:** the policy can be checked without applying it, using an API token:
+
+```bash
+curl -u "$TS_API_TOKEN:" -H "Content-Type: application/hujson" \
+  --data-binary @policy.hujson \
+  "https://api.tailscale.com/api/v2/tailnet/-/acl/validate"
+```
+
+`{}` means valid with all `tests` passing. **Confirm the validator is actually running
+the tests before trusting that result** — feed it a deliberately false assertion (e.g.
+claim an agent *can* reach `mei:22`) and check it returns
+`"want: Accept, got: Drop"`. An empty result from a validator that silently skipped the
+tests looks identical to a pass. The admin console's access-rule tester covers the same
+ground interactively.
 
 ---
 
 ## Phase 4 — Agent onboarding
+
+> **Outstanding.** Requires a human on each Windows machine. Phases 1–3 are done, so
+> the exit node is live and the lockdown is in force — an agent signing in now gets
+> internet egress via Miami and nothing else on the tailnet.
 
 For every agent:
 
@@ -200,6 +309,8 @@ Add the agent's account to `group:srs-agents` in the policy file before they con
 ---
 
 ## Phase 5 — Required testing
+
+> **Outstanding — this is the gate.** Nothing rolls out past Louis until it passes.
 
 Pilot with **Louis and one agent** before deploying to everyone.
 
@@ -278,8 +389,18 @@ tailscale set --exit-node=
 # On the VPS — stop advertising
 sudo tailscale set --advertise-exit-node=false
 
+# Remove the tag (returns mei's ownership to the authenticating user).
+# Do this from the API or console, not the host — see Phase 3.
+curl -u "$TS_API_TOKEN:" -X POST -H "Content-Type: application/json" \
+  -d '{"tags":[]}' "https://api.tailscale.com/api/v2/device/<DEVICE_ID>/tags"
+
 # Revert the policy file via the admin console's version history
 ```
+
+**Do not roll back the policy to the previous revision without reading it first.** The
+revision immediately prior to 2026-08-12 is the stock allow-all, which grants the four
+SRS agents full access to every device on the tailnet. Restoring it to fix an exit-node
+problem would reopen the hole Phase 3 closed.
 
 The policy file keeps a revision history in the admin console; restore the prior revision rather than hand-editing back.
 
