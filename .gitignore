@@ -2,8 +2,7 @@
 node_modules/
 
 # Skill install artifacts (npx skills add)
-.agents/*
-!.agents/product-marketing.md
+.agents/
 .claude/
 skills-lock.json
 
